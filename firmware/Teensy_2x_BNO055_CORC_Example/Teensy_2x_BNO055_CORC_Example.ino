@@ -1,15 +1,22 @@
-// This example is for a 2x BNO055 IMU with 2x Teensy 4.1
-// It is used to send the IMU data to CORC
-// The IMU data is sent in the following format:
-// - Acceleration
-// - Linear Acceleration
-// - Quaternion
+// This example is for sending data to CAN bus with two BNO055 IMUs connected to Teensy 4.1
+// It is intented to be an example of firmware that work with the CANIMU module in CORC
+// Check the CORC code here: https://github.com/UniMelbHumanRoboticsLab/CANOpenRobotController
+//
+// Author: Mingrui Sun
+// Date: 2025-05-30
 
-// Connect the IMU to the Teensy 4.1
-// - SCL to analog 5??
-// - SDA to analog 4??
-// - VDD to 3.3-5V DC
-// - GROUND to common ground
+// The idea is:
+// The IMU data is sent to the MCU through I2C
+// The MCU quantises the data (16-bit integer per axis) and package them into CAN messages
+// The MCU sends the CAN messages to the CAN bus
+
+// For the two IMUs, the data is sent in the following format:
+// - CAN message 1 (8 bytes): 6 bytes of acceleration data of the 1st IMU + 2 bytes of zeros
+// - CAN message 2 (8 bytes): 6 bytes of linear acceleration data of the 1st IMU + 2 bytes of zeros
+// - CAN message 3 (8 bytes): 8 bytes of quaternion data of the 1st IMU
+// - CAN message 4 (8 bytes): 6 bytes of acceleration data of the 2nd IMU + 2 bytes of zeros
+// - CAN message 5 (8 bytes): 6 bytes of linear acceleration data of the 2nd IMU + 2 bytes of zeros
+// - CAN message 6 (8 bytes): 8 bytes of quaternion data of the 2nd IMU
 
 
 #include <Wire.h>
@@ -19,10 +26,10 @@
 #include <EEPROM.h>
 #include <FlexCAN.h>
 
-#define CUR_SENSOR_ID 55
-#define CUR_SENSOR_ADDR 0x28
-#define NUM_INT16_PER_CAN_MSG 4
-#define SAMPLE_RATE 100 // integer
+#define SENSOR_ID 55  // This is some parameters of I2C device address of the BNO055
+#define SENSOR_ADDR 0x28  // This is some parameters of I2C device address of the BNO055
+#define NUM_INT16_PER_CAN_MSG 4 // 4 int16_t data per CAN message
+#define SAMPLE_RATE 100 // Hz
 
 #define CAN_ID_IMU1_ACCL 0x272
 #define CAN_ID_IMU1_LINACCL 0x273
@@ -34,9 +41,8 @@
 // IMU parameters
 // Make sure these parameters match the ones in CORC
 #define INT16_MAX 32767
-#define ACCL_RANGE 100
-#define GYRO_RANGE 2000
-#define QUANT_RANGE 1
+#define ACCL_RANGE 100  // m/s^2, apply for both acceleration and linear acceleration
+#define QUANT_RANGE 1  // unitless
 
 // CAN bus settings
 // Make sure the CAN rate matches the one in CORC
@@ -50,8 +56,8 @@ int elpsTime = 0;  // time elasped in the current loop
 int loopTime = 1000 / SAMPLE_RATE;  // loop time (ms)
  
 // Check I2C device address and correct line below (by default address is 0x29 or 0x28)
-Adafruit_BNO055 bno1 = Adafruit_BNO055(CUR_SENSOR_ID, CUR_SENSOR_ADDR);
-Adafruit_BNO055 bno2 = Adafruit_BNO055(CUR_SENSOR_ID+1, CUR_SENSOR_ADDR+1);
+Adafruit_BNO055 bno1 = Adafruit_BNO055(SENSOR_ID, SENSOR_ADDR);
+Adafruit_BNO055 bno2 = Adafruit_BNO055(SENSOR_ID+1, SENSOR_ADDR+1);
 int eeAddress = 0;
 int eeAddress2 = sizeof(long)+sizeof(adafruit_bno055_offsets_t);
 
@@ -62,10 +68,10 @@ int eeAddress2 = sizeof(long)+sizeof(adafruit_bno055_offsets_t);
 /**************************************************************************/
 void restoreCurrentSensor(int imuID, const Adafruit_BNO055 &curIMU, int curEEAddress)
 {
-  /* Initialise the sensor */
+  // Initialise the sensor
   if (!curIMU.begin())
   {
-    /* There was a problem detecting the BNO055 ... check your connections */
+    // There was a problem detecting the BNO055 ... check your connections
     Serial.print("Ooops, BNO055 "); Serial.print(imuID); Serial.println(" not detected ... Check your wiring or I2C ADDR!");
     while (1);
   }
@@ -76,7 +82,7 @@ void restoreCurrentSensor(int imuID, const Adafruit_BNO055 &curIMU, int curEEAdd
   curIMU.getSensor(&sensor);
   EEPROM.get(curEEAddress, bnoID);
 
-  /*Start Restore*/
+  // Start Restore
   if (bnoID != sensor.sensor_id)
   {
       Serial.println("\nNo Calibration Data for this sensor exists in EEPROM");
@@ -84,7 +90,7 @@ void restoreCurrentSensor(int imuID, const Adafruit_BNO055 &curIMU, int curEEAdd
   }
   else
   {
-    /* Restore Calibration */
+    // Restore Calibration
     curEEAddress += sizeof(long);
     adafruit_bno055_offsets_t calibrationData;
     EEPROM.get(curEEAddress, calibrationData);
@@ -214,10 +220,10 @@ void loop(void)
   msgLinAcc[3] = 0;
 
   quat = bno1.getQuat();
-  msgQuat[0] = rangeMapping(quat.w(), QUANT_RANGE, INT16_MAX);  // yaw
-  msgQuat[1] = rangeMapping(quat.x(), QUANT_RANGE, INT16_MAX);  //pitch
-  msgQuat[2] = rangeMapping(quat.y(), QUANT_RANGE, INT16_MAX);  // roll
-  msgQuat[3] = rangeMapping(quat.z(), QUANT_RANGE, INT16_MAX);  // roll
+  msgQuat[0] = rangeMapping(quat.w(), QUANT_RANGE, INT16_MAX);
+  msgQuat[1] = rangeMapping(quat.x(), QUANT_RANGE, INT16_MAX);
+  msgQuat[2] = rangeMapping(quat.y(), QUANT_RANGE, INT16_MAX);
+  msgQuat[3] = rangeMapping(quat.z(), QUANT_RANGE, INT16_MAX);
 
   sendCanMessage(0, msgAcc, msgLinAcc, msgQuat);
 
@@ -236,10 +242,10 @@ void loop(void)
   msgLinAcc[3] = 0;
 
   quat = bno2.getQuat();
-  msgQuat[0] = rangeMapping(quat.w(), QUANT_RANGE, INT16_MAX);  // yaw
-  msgQuat[1] = rangeMapping(quat.x(), QUANT_RANGE, INT16_MAX);  //pitch
-  msgQuat[2] = rangeMapping(quat.y(), QUANT_RANGE, INT16_MAX);  // roll
-  msgQuat[3] = rangeMapping(quat.z(), QUANT_RANGE, INT16_MAX);  // roll
+  msgQuat[0] = rangeMapping(quat.w(), QUANT_RANGE, INT16_MAX);
+  msgQuat[1] = rangeMapping(quat.x(), QUANT_RANGE, INT16_MAX);
+  msgQuat[2] = rangeMapping(quat.y(), QUANT_RANGE, INT16_MAX);
+  msgQuat[3] = rangeMapping(quat.z(), QUANT_RANGE, INT16_MAX);
   
   sendCanMessage(1, msgAcc, msgLinAcc, msgQuat);
 
